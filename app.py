@@ -110,7 +110,7 @@ if pd.notna(corr):
 st.divider()
 
 # ---------------------------------------------------------------
-# MAIN SCATTER
+# MAIN SCATTER (with search-and-highlight)
 # ---------------------------------------------------------------
 st.subheader("Every school, plotted")
 st.markdown(
@@ -119,22 +119,128 @@ st.markdown(
     "(so it's a more reliable data point)."
 )
 
-fig = px.scatter(
-    filtered,
+search_name = st.text_input(
+    "🔎 Find a specific school (optional)",
+    placeholder="Start typing a school name...",
+)
+
+plot_df = filtered.copy()
+plot_df["highlight"] = "Other schools"
+matched_search = None
+if search_name.strip():
+    mask = plot_df["high_school"].str.contains(search_name.strip(), case=False, na=False)
+    if mask.any():
+        plot_df.loc[mask, "highlight"] = "🔎 Match"
+        matched_search = plot_df.loc[mask, "high_school"].unique().tolist()
+    else:
+        st.caption(f"No school matching \"{search_name}\" in this view.")
+
+if matched_search:
+    fig = px.scatter(
+        plot_df,
+        x="frpm_pct_display",
+        y="admit_rate_residual",
+        size="applicants",
+        color="highlight",
+        color_discrete_map={"Other schools": "#4c78a8", "🔎 Match": "#ff4b4b"},
+        hover_name="high_school",
+        labels={
+            "frpm_pct_display": "% of Students in Poverty (Free/Reduced Lunch)",
+            "admit_rate_residual": "Admissions Outcome vs. Expected",
+        },
+    )
+    st.caption(f"Highlighted in red: {', '.join(matched_search)}")
+else:
+    fig = px.scatter(
+        plot_df,
+        x="frpm_pct_display",
+        y="admit_rate_residual",
+        size="applicants",
+        color="county",
+        hover_name="high_school",
+        labels={
+            "frpm_pct_display": "% of Students in Poverty (Free/Reduced Lunch)",
+            "admit_rate_residual": "Admissions Outcome vs. Expected",
+        },
+    )
+
+fig.add_hline(y=0, line_dash="dash", line_color="white", opacity=0.6,
+              annotation_text="Exactly as expected", annotation_position="bottom right")
+fig.update_layout(yaxis_tickformat=".0%", legend_title_text="", font=dict(size=13))
+st.plotly_chart(fig, use_container_width=True)
+
+st.divider()
+
+# ---------------------------------------------------------------
+# ANIMATED TIME-LAPSE (all years at once, with Play button)
+# ---------------------------------------------------------------
+st.subheader("Watch it change: 2017–2025")
+st.markdown(
+    "Press **Play** to animate every year in sequence. Watch whether high-poverty "
+    "schools (right side) drift up, down, or stay put relative to the dashed line."
+)
+
+anim_df = df[df.county.isin(selected_counties)].dropna(
+    subset=["frpm_pct", "admit_rate_residual"]
+).copy()
+anim_df["frpm_pct_display"] = (anim_df["frpm_pct"] * 100).round(1)
+anim_df = anim_df.sort_values("fall_term")
+anim_df["fall_term"] = anim_df["fall_term"].astype(str)
+
+anim_fig = px.scatter(
+    anim_df,
     x="frpm_pct_display",
     y="admit_rate_residual",
     size="applicants",
     color="county",
     hover_name="high_school",
+    animation_frame="fall_term",
+    range_x=[0, 100],
+    range_y=[anim_df.admit_rate_residual.min() - 0.05, anim_df.admit_rate_residual.max() + 0.05],
     labels={
-        "frpm_pct_display": "% of Students in Poverty (Free/Reduced Lunch)",
+        "frpm_pct_display": "% of Students in Poverty",
         "admit_rate_residual": "Admissions Outcome vs. Expected",
     },
 )
-fig.add_hline(y=0, line_dash="dash", line_color="white", opacity=0.6,
-              annotation_text="Exactly as expected", annotation_position="bottom right")
-fig.update_layout(yaxis_tickformat=".0%", legend_title_text="County", font=dict(size=13))
-st.plotly_chart(fig, use_container_width=True)
+anim_fig.add_hline(y=0, line_dash="dash", line_color="white", opacity=0.6)
+anim_fig.update_layout(yaxis_tickformat=".0%", font=dict(size=13))
+st.plotly_chart(anim_fig, use_container_width=True)
+
+st.divider()
+
+# ---------------------------------------------------------------
+# HIDDEN GEMS LEADERBOARD
+# ---------------------------------------------------------------
+st.subheader("🏆 Hidden Gems: High-Poverty Schools Beating the Odds")
+st.markdown(
+    "These are schools with **above-average poverty levels** whose admissions outcomes "
+    "*most* exceeded expectations this year — real schools worth a closer look."
+)
+
+poverty_threshold = st.slider(
+    "Minimum poverty level to qualify as 'high-poverty'", 0, 100, 60, step=5, format="%d%%"
+) / 100
+
+gems = filtered[
+    (filtered.frpm_pct >= poverty_threshold)
+].dropna(subset=["admit_rate_residual"]).nlargest(10, "admit_rate_residual")
+
+if gems.empty:
+    st.info("No schools meet this poverty threshold in the current filters. Try lowering it.")
+else:
+    gems_display = gems.rename(columns={
+        "high_school": "School", "county": "County", "frpm_pct_display": "% in Poverty",
+        "admit_rate_residual": "Outcome vs. Expected", "applicants": "# Applicants",
+    })[["School", "County", "% in Poverty", "Outcome vs. Expected", "# Applicants"]]
+    st.dataframe(
+        gems_display.style.format({"% in Poverty": "{:.0f}%", "Outcome vs. Expected": "{:+.1%}"})
+        .background_gradient(subset=["Outcome vs. Expected"], cmap="Greens"),
+        hide_index=True, use_container_width=True
+    )
+    st.caption(
+        "⚠️ Small applicant counts can produce noisy results — check the # Applicants "
+        "column before treating a single school's result as a strong signal."
+    )
 
 st.divider()
 
