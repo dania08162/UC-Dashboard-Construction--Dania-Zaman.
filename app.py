@@ -8,9 +8,10 @@ df = pd.read_csv("chart_data.csv")
 
 st.title("Does Poverty Predict UC Admissions Outcomes?")
 st.markdown(
-    "**Question:** For Bay Area high schools, does a school's poverty rate "
-    "(% on free/reduced lunch) predict whether it over- or under-performs its "
-    "*expected* UC admit rate — after controlling for GPA, a-g completion, and school size?"
+    "**Question:** For Bay Area high schools, after a baseline model already controls for "
+    "GPA, a-g completion, poverty, and school size, is there anything *left over* in how "
+    "schools outperform or underperform their expected UC admit rate — and does it vary by "
+    "county or track with poverty level?"
 )
 
 # ---- Sidebar controls ----
@@ -95,9 +96,82 @@ with right:
     line_fig.add_hline(y=0, line_dash="dash", line_color="gray")
     st.plotly_chart(line_fig, use_container_width=True)
 
+st.divider()
+
+# ---- Matched Pairs Finder ----
+st.subheader("Matched Pairs: Same Poverty Level, Different Outcomes")
+st.markdown(
+    "Pick a poverty rate. This finds real schools with roughly that same poverty level "
+    "in the selected year, and shows the ones that most over- and under-performed their "
+    "expected admit rate — schools you'd expect to look similar on paper, but didn't."
+)
+
+target_pct = st.slider(
+    "Target % Free/Reduced Lunch", 0, 100, 50, step=5, key="matched_pairs_slider"
+) / 100
+
+tolerance = st.slider(
+    "Tolerance (± percentage points)", 1, 20, 5, step=1, key="matched_pairs_tolerance"
+) / 100
+
+matched = filtered[
+    (filtered.frpm_pct >= target_pct - tolerance) &
+    (filtered.frpm_pct <= target_pct + tolerance)
+].dropna(subset=["admit_rate_residual"])
+
+if len(matched) < 2:
+    st.warning(
+        f"Only {len(matched)} school(s) found within that range for {year}. "
+        "Try widening the tolerance or picking a different year."
+    )
+else:
+    n_show = min(3, len(matched) // 2) if len(matched) >= 4 else 1
+    best = matched.nlargest(n_show, "admit_rate_residual")
+    worst = matched.nsmallest(n_show, "admit_rate_residual")
+
+    pair_left, pair_right = st.columns(2)
+
+    display_cols = {
+        "high_school": "School",
+        "county": "County",
+        "frpm_pct_display": "% FRPM",
+        "admit_rate_residual": "Residual",
+        "expected_admit_rate": "Expected Admit Rate",
+        "admit_rate": "Actual Admit Rate",
+        "applicants": "Applicants",
+    }
+
+    with pair_left:
+        st.markdown(f"**Outperformers** ({len(matched)} schools matched at ~{target_pct*100:.0f}% FRPM)")
+        show = best.rename(columns=display_cols)[list(display_cols.values())]
+        st.dataframe(show.style.format({
+            "% FRPM": "{:.1f}%",
+            "Residual": "{:+.2f}",
+            "Expected Admit Rate": "{:.2f}",
+            "Actual Admit Rate": "{:.2f}",
+        }), hide_index=True, use_container_width=True)
+
+    with pair_right:
+        st.markdown("**Underperformers**")
+        show = worst.rename(columns=display_cols)[list(display_cols.values())]
+        st.dataframe(show.style.format({
+            "% FRPM": "{:.1f}%",
+            "Residual": "{:+.2f}",
+            "Expected Admit Rate": "{:.2f}",
+            "Actual Admit Rate": "{:.2f}",
+        }), hide_index=True, use_container_width=True)
+
+    gap = best.admit_rate_residual.mean() - worst.admit_rate_residual.mean()
+    st.info(
+        f"At roughly {target_pct*100:.0f}% poverty, the gap between the top and bottom "
+        f"performers is **{gap:.2f}** in admit-rate residual — meaning two schools with "
+        f"near-identical poverty levels can land on opposite sides of their expected outcome."
+    )
+
 st.caption(
     "Data: UC Information Center & California Dept. of Education, aggregated at the "
     "school level. Bay Area public high schools only (9 counties). No individual "
     "student records. 'Expected admit rate' is a model baseline controlling for "
-    "applicant GPA, a-g completion rate, poverty, and cohort size."
+    "applicant GPA, a-g completion rate, poverty, and cohort size — so this dashboard "
+    "shows what's left over after that adjustment, not raw poverty effects."
 )
