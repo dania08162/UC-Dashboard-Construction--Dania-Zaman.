@@ -232,6 +232,9 @@ else:
         "high_school": "School", "county": "County", "frpm_pct_display": "% in Poverty",
         "admit_rate_residual": "Outcome vs. Expected", "applicants": "# Applicants",
     })[["School", "County", "% in Poverty", "Outcome vs. Expected", "# Applicants"]]
+    gems_display["Note"] = gems_display["# Applicants"].apply(
+        lambda n: "⚠️ Small sample" if n < 10 else ""
+    )
     st.dataframe(
         gems_display.style.format({"% in Poverty": "{:.0f}%", "Outcome vs. Expected": "{:+.1%}"})
         .background_gradient(subset=["Outcome vs. Expected"], cmap="Greens"),
@@ -252,7 +255,7 @@ st.markdown("Same schools, on a map. Color shows whether they beat or missed exp
 
 map_df = filtered.dropna(subset=["admit_rate_residual"]).copy()
 if "lat" in df.columns and "lon" in df.columns and map_df["lat"].notna().any():
-    map_fig = px.scatter_mapbox(
+    map_fig = px.scatter_map(
         map_df,
         lat="lat", lon="lon",
         color="admit_rate_residual",
@@ -264,7 +267,7 @@ if "lat" in df.columns and "lon" in df.columns and map_df["lat"].notna().any():
         height=500,
         labels={"admit_rate_residual": "Outcome vs. Expected"},
     )
-    map_fig.update_layout(mapbox_style="carto-darkmatter", margin=dict(l=0, r=0, t=0, b=0))
+    map_fig.update_layout(map_style="dark", margin=dict(l=0, r=0, t=0, b=0))
     st.plotly_chart(map_fig, use_container_width=True)
 else:
     st.info("Location data isn't available for this view.")
@@ -370,11 +373,19 @@ else:
         "applicants": "# Applicants",
     }
 
+    def flag_small_sample(row):
+        return "⚠️ Small sample" if row["applicants"] < 10 else ""
+
+    best = best.copy()
+    worst = worst.copy()
+    best["Note"] = best.apply(flag_small_sample, axis=1)
+    worst["Note"] = worst.apply(flag_small_sample, axis=1)
+
     pair_left, pair_right = st.columns(2)
 
     with pair_left:
         st.markdown("### Beat expectations")
-        show = best.rename(columns=display_cols)[list(display_cols.values())]
+        show = best.rename(columns=display_cols)[list(display_cols.values()) + ["Note"]]
         st.dataframe(
             show.style.format({"% in Poverty": "{:.0f}%", "Outcome vs. Expected": "{:+.1%}"}),
             hide_index=True, use_container_width=True
@@ -382,7 +393,7 @@ else:
 
     with pair_right:
         st.markdown("### Missed expectations")
-        show = worst.rename(columns=display_cols)[list(display_cols.values())]
+        show = worst.rename(columns=display_cols)[list(display_cols.values()) + ["Note"]]
         st.dataframe(
             show.style.format({"% in Poverty": "{:.0f}%", "Outcome vs. Expected": "{:+.1%}"}),
             hide_index=True, use_container_width=True
@@ -424,6 +435,70 @@ if not trend_df.empty:
     st.plotly_chart(trend_fig, use_container_width=True)
 else:
     st.info("Not enough data to show a year-over-year trend for this county selection.")
+
+st.divider()
+
+# ---------------------------------------------------------------
+# AUTO-GENERATED NARRATIVE
+# ---------------------------------------------------------------
+st.subheader("📝 What changed this year?")
+
+available_years = sorted(df[df.county.isin(selected_counties)].fall_term.unique())
+prior_years = [y for y in available_years if y < year]
+
+if prior_years:
+    prior_year = max(prior_years)
+    prior_df = df[(df.fall_term == prior_year) & (df.county.isin(selected_counties))].dropna(
+        subset=["frpm_pct", "admit_rate_residual", "high_school"]
+    )
+    cur_df = filtered.dropna(subset=["frpm_pct", "admit_rate_residual", "high_school"])
+
+    narrative_lines = []
+
+    # Correlation shift
+    prior_corr = prior_df["frpm_pct"].corr(prior_df["admit_rate_residual"])
+    if pd.notna(prior_corr) and pd.notna(corr):
+        shift = corr - prior_corr
+        if abs(shift) < 0.05:
+            narrative_lines.append(
+                f"The link between poverty and admissions outcomes barely moved since {prior_year} "
+                f"({prior_corr:+.2f} → {corr:+.2f})."
+            )
+        elif shift > 0:
+            narrative_lines.append(
+                f"The link between poverty and admissions outcomes **strengthened** since {prior_year} "
+                f"({prior_corr:+.2f} → {corr:+.2f}) — high-poverty schools are outperforming more than before."
+            )
+        else:
+            narrative_lines.append(
+                f"The link between poverty and admissions outcomes **weakened** since {prior_year} "
+                f"({prior_corr:+.2f} → {corr:+.2f})."
+            )
+
+    # Biggest mover (school with largest swing in residual, present in both years)
+    merged = cur_df.merge(
+        prior_df[["high_school", "admit_rate_residual"]],
+        on="high_school", suffixes=("_cur", "_prior")
+    )
+    if not merged.empty:
+        merged["swing"] = merged["admit_rate_residual_cur"] - merged["admit_rate_residual_prior"]
+        biggest_gain = merged.loc[merged["swing"].idxmax()]
+        biggest_drop = merged.loc[merged["swing"].idxmin()]
+        narrative_lines.append(
+            f"**Biggest improvement:** {biggest_gain['high_school'].title()} moved from "
+            f"{biggest_gain['admit_rate_residual_prior']:+.1%} to {biggest_gain['admit_rate_residual_cur']:+.1%} "
+            f"vs. expected ({prior_year} → {year})."
+        )
+        narrative_lines.append(
+            f"**Biggest decline:** {biggest_drop['high_school'].title()} moved from "
+            f"{biggest_drop['admit_rate_residual_prior']:+.1%} to {biggest_drop['admit_rate_residual_cur']:+.1%} "
+            f"vs. expected ({prior_year} → {year})."
+        )
+
+    for line in narrative_lines:
+        st.markdown(f"- {line}")
+else:
+    st.info(f"{year} is the earliest available year in this data, so there's no prior year to compare against.")
 
 st.divider()
 
