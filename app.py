@@ -9,7 +9,7 @@ df = pd.read_csv("chart_data.csv")
 # ---------------------------------------------------------------
 # HEADER
 # ---------------------------------------------------------------
-st.title("📊 Does Poverty Predict UC Admissions Outcomes?")
+st.title("Does Poverty Predict UC Admissions Outcomes?")
 
 st.markdown(
     """
@@ -17,8 +17,8 @@ st.markdown(
     the school's grades, course completion, and size. This tool compares that prediction
     to what **actually** happened, and asks: *does a school's poverty level explain the gap?*
 
-    Use the year slider on the left to explore different years, then scroll down to compare
-    real schools side by side.
+    Use the controls on the left to filter by year and county, then scroll down to compare
+    real schools side by side, see them on a map, or find matched pairs.
     """
 )
 
@@ -27,7 +27,7 @@ st.divider()
 # ---------------------------------------------------------------
 # SIDEBAR
 # ---------------------------------------------------------------
-st.sidebar.header("⚙️ Controls")
+st.sidebar.header("Controls")
 years = sorted(df.fall_term.unique())
 year = st.sidebar.slider(
     "Choose a year",
@@ -35,7 +35,15 @@ year = st.sidebar.slider(
     help="2022 is skipped — that year's poverty data has a known gap in the source records."
 )
 
-filtered = df[df.fall_term == year].copy()
+all_counties = sorted(df.county.dropna().unique())
+selected_counties = st.sidebar.multiselect(
+    "Filter by county",
+    all_counties,
+    default=all_counties,
+    help="Uncheck counties to remove them from every chart below."
+)
+
+filtered = df[(df.fall_term == year) & (df.county.isin(selected_counties))].copy()
 filtered["frpm_pct_display"] = (filtered["frpm_pct"] * 100).round(1)
 filtered["admit_rate_residual"] = filtered["admit_rate_residual"].round(3)
 
@@ -44,16 +52,29 @@ st.sidebar.markdown(
     """
     **How to read "residual":**
 
-    - 🟢 **Positive** = school admitted *more* students than expected
-    - 🔴 **Negative** = school admitted *fewer* students than expected
+    - **Positive** = school admitted *more* students than expected
+    - **Negative** = school admitted *fewer* students than expected
 
     "Expected" already accounts for GPA, course completion, poverty, and school size —
     so this measures what's left over *after* those factors are considered.
     """
 )
 
+st.sidebar.markdown("---")
+csv_export = filtered.to_csv(index=False).encode("utf-8")
+st.sidebar.download_button(
+    "Download this view as CSV",
+    data=csv_export,
+    file_name=f"uc_admissions_{year}.csv",
+    mime="text/csv",
+)
+
+if filtered.empty:
+    st.warning("No schools match the current filters. Try selecting more counties or a different year.")
+    st.stop()
+
 # ---------------------------------------------------------------
-# KPI ROW — plain language framing
+# KPI ROW
 # ---------------------------------------------------------------
 st.subheader(f"Quick summary — Fall {year}")
 
@@ -65,20 +86,26 @@ col1, col2, col3 = st.columns(3)
 col1.metric("Schools in this view", len(filtered))
 col2.metric(
     "Poverty ↔ Outcome link",
-    f"{corr:+.2f}",
+    f"{corr:+.2f}" if pd.notna(corr) else "n/a",
     help="Ranges from -1 to +1. Near 0 means poverty barely explains the gap. "
          "Positive means higher-poverty schools tend to outperform expectations."
 )
 col3.metric(
     "Higher-poverty schools' avg. outcome",
-    f"{high_pov.admit_rate_residual.mean():+.1%}",
+    f"{high_pov.admit_rate_residual.mean():+.1%}" if len(high_pov) else "n/a",
     delta=f"{(high_pov.admit_rate_residual.mean() - low_pov.admit_rate_residual.mean()):+.1%} vs. lower-poverty schools"
+    if len(high_pov) and len(low_pov) else None
 )
 
-st.caption(
-    "💡 In plain terms: a correlation near 0 means a school's poverty level tells you "
-    "almost nothing about whether it beats or misses its predicted admit rate."
-)
+# Dynamic plain-language takeaway
+if pd.notna(corr):
+    if abs(corr) < 0.1:
+        takeaway = "Poverty level tells you almost nothing about whether a school beats or misses its predicted admit rate this year."
+    elif corr >= 0.1:
+        takeaway = "Higher-poverty schools tend to slightly *outperform* their predicted admit rate this year."
+    else:
+        takeaway = "Higher-poverty schools tend to slightly *underperform* their predicted admit rate this year."
+    st.caption(f"💬 In plain terms: {takeaway}")
 
 st.divider()
 
@@ -106,12 +133,35 @@ fig = px.scatter(
 )
 fig.add_hline(y=0, line_dash="dash", line_color="white", opacity=0.6,
               annotation_text="Exactly as expected", annotation_position="bottom right")
-fig.update_layout(
-    yaxis_tickformat=".0%",
-    legend_title_text="County",
-    font=dict(size=13),
-)
+fig.update_layout(yaxis_tickformat=".0%", legend_title_text="County", font=dict(size=13))
 st.plotly_chart(fig, use_container_width=True)
+
+st.divider()
+
+# ---------------------------------------------------------------
+# MAP VIEW
+# ---------------------------------------------------------------
+st.subheader("Where are these schools?")
+st.markdown("Same schools, on a map. Color shows whether they beat or missed expectations.")
+
+map_df = filtered.dropna(subset=["admit_rate_residual"]).copy()
+if "lat" in df.columns and "lon" in df.columns and map_df["lat"].notna().any():
+    map_fig = px.scatter_mapbox(
+        map_df,
+        lat="lat", lon="lon",
+        color="admit_rate_residual",
+        size="applicants",
+        hover_name="high_school",
+        color_continuous_scale="RdYlGn",
+        color_continuous_midpoint=0,
+        zoom=8,
+        height=500,
+        labels={"admit_rate_residual": "Outcome vs. Expected"},
+    )
+    map_fig.update_layout(mapbox_style="carto-darkmatter", margin=dict(l=0, r=0, t=0, b=0))
+    st.plotly_chart(map_fig, use_container_width=True)
+else:
+    st.info("Location data isn't available for this view.")
 
 st.divider()
 
@@ -156,7 +206,6 @@ with right:
     school = st.selectbox("School", school_list, index=default_idx, label_visibility="collapsed")
 
     school_data = df[df.high_school == school].sort_values("fall_term").copy()
-    school_data["admit_rate_residual"] = school_data["admit_rate_residual"]
 
     line_fig = px.line(
         school_data,
@@ -166,6 +215,8 @@ with right:
         labels={"fall_term": "Year", "admit_rate_residual": "Outcome vs. Expected"},
     )
     line_fig.add_hline(y=0, line_dash="dash", line_color="white", opacity=0.6)
+    line_fig.add_vrect(x0=2020.5, x1=2021.5, fillcolor="orange", opacity=0.15, line_width=0,
+                        annotation_text="Test-optional begins", annotation_position="top left")
     line_fig.update_layout(yaxis_tickformat=".0%", font=dict(size=13))
     st.plotly_chart(line_fig, use_container_width=True)
 
@@ -174,7 +225,7 @@ st.divider()
 # ---------------------------------------------------------------
 # MATCHED PAIRS FINDER
 # ---------------------------------------------------------------
-st.subheader("🔍 Find two similar schools with different outcomes")
+st.subheader("Find two similar schools with different outcomes")
 st.markdown(
     """
     Two schools can have **the exact same poverty level** and still land on opposite
@@ -216,7 +267,7 @@ else:
     pair_left, pair_right = st.columns(2)
 
     with pair_left:
-        st.markdown(f"### 🟢 Beat expectations")
+        st.markdown("### Beat expectations")
         show = best.rename(columns=display_cols)[list(display_cols.values())]
         st.dataframe(
             show.style.format({"% in Poverty": "{:.0f}%", "Outcome vs. Expected": "{:+.1%}"}),
@@ -224,7 +275,7 @@ else:
         )
 
     with pair_right:
-        st.markdown(f"### 🔴 Missed expectations")
+        st.markdown("### Missed expectations")
         show = worst.rename(columns=display_cols)[list(display_cols.values())]
         st.dataframe(
             show.style.format({"% in Poverty": "{:.0f}%", "Outcome vs. Expected": "{:+.1%}"}),
@@ -241,7 +292,36 @@ else:
 
 st.divider()
 
-with st.expander("📋 About this data"):
+# ---------------------------------------------------------------
+# YEAR-OVER-YEAR TREND (all filtered schools, not just one)
+# ---------------------------------------------------------------
+st.subheader("Has this relationship changed over time?")
+st.markdown(
+    "The correlation between poverty and outcome, recalculated for every available year. "
+    "A flat line near zero across all years would mean poverty consistently explains little."
+)
+
+trend_rows = []
+for yr in years:
+    yr_df = df[(df.fall_term == yr) & (df.county.isin(selected_counties))].dropna(
+        subset=["frpm_pct", "admit_rate_residual"]
+    )
+    if len(yr_df) >= 5:
+        trend_rows.append({"fall_term": yr, "correlation": yr_df["frpm_pct"].corr(yr_df["admit_rate_residual"])})
+
+trend_df = pd.DataFrame(trend_rows)
+if not trend_df.empty:
+    trend_fig = px.line(trend_df, x="fall_term", y="correlation", markers=True,
+                         labels={"fall_term": "Year", "correlation": "Poverty ↔ Outcome Correlation"})
+    trend_fig.add_hline(y=0, line_dash="dash", line_color="white", opacity=0.6)
+    trend_fig.update_layout(font=dict(size=13))
+    st.plotly_chart(trend_fig, use_container_width=True)
+else:
+    st.info("Not enough data to show a year-over-year trend for this county selection.")
+
+st.divider()
+
+with st.expander("About this data"):
     st.markdown(
         """
         - **Source:** UC Information Center + California Dept. of Education, joined at the school level.
