@@ -268,7 +268,7 @@ if "lat" in df.columns and "lon" in df.columns and map_df["lat"].notna().any():
         labels={"admit_rate_residual": "Outcome vs. Expected"},
     )
     map_fig.update_layout(map_style="dark", margin=dict(l=0, r=0, t=0, b=0))
-    st.plotly_chart(map_fig, use_container_width=True)
+    st.plotly_chart(map_fig, use_container_width=True, config={"scrollZoom": True})
 else:
     st.info("Location data isn't available for this view.")
 
